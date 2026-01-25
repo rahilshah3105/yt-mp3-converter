@@ -12,6 +12,7 @@ const fsPromises = require('fs/promises');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
 // Set ffmpeg path
 if (ffmpegPath) {
@@ -23,7 +24,12 @@ if (ffmpegPath) {
 
 // Middleware
 app.use(cors({
-    origin: ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:5174'],
+    origin: [
+        'http://localhost:3000', 
+        'http://localhost:5173', 
+        'http://localhost:5174',
+        FRONTEND_URL
+    ],
     credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));

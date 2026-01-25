@@ -70,6 +70,20 @@ cd ../frontend
 npm install
 ```
 
+### 4. Environment Setup (Optional for local development)
+
+**Backend** - Create `backend/.env`:
+```env
+PORT=5000
+NODE_ENV=development
+FRONTEND_URL=http://localhost:5173
+```
+
+**Frontend** - Create `frontend/.env`:
+```env
+VITE_BACKEND_URL=http://localhost:5000
+```
+
 ## 🎯 Usage
 
 ### Running the Application
@@ -98,6 +112,32 @@ cd frontend
 npm run build
 ```
 The optimized production build will be in the `frontend/dist` directory.
+
+## ☁️ Deployment
+
+### Deploy to Railway (Recommended)
+
+Railway offers easy deployment with $5 free credit per month. Perfect for full-stack apps!
+
+**📖 See detailed step-by-step guide:** [DEPLOYMENT.md](DEPLOYMENT.md)
+
+**✅ Quick checklist:** [DEPLOYMENT-CHECKLIST.md](DEPLOYMENT-CHECKLIST.md)
+
+**Quick Overview:**
+1. Push your code to GitHub
+2. Sign up at [Railway.app](https://railway.app)
+3. Create new project from your GitHub repo
+4. Deploy backend service (root directory: `backend`)
+5. Deploy frontend service (root directory: `frontend`)
+6. Configure environment variables
+7. Generate domains for both services
+
+**Live Demo:** Add your Railway URL here after deployment!
+
+### Alternative Deployment Options
+- **Frontend**: Vercel, Netlify, GitHub Pages
+- **Backend**: Render, Heroku, DigitalOcean
+- See [DEPLOYMENT.md](DEPLOYMENT.md) for more options
 
 ## 📁 Project Structure
 

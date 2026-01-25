@@ -3,6 +3,9 @@ import axios from 'axios';
 import { Download, Youtube, Music, Loader, Check, AlertCircle, Play } from 'lucide-react';
 import './App.css';
 
+// Get backend URL from environment variable or use localhost for development
+const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+
 function App() {
   const [url, setUrl] = useState('');
   const [selectedFormat, setSelectedFormat] = useState('mp3-320');
@@ -22,7 +25,7 @@ function App() {
     setVideoInfo(null);
 
     try {
-      const response = await axios.post('/api/video-info', { url });
+      const response = await axios.post(`${API_BASE_URL}/api/video-info`, { url });
       if (response.data.success) {
         setVideoInfo(response.data.data);
         setStep(2);
@@ -41,7 +44,7 @@ function App() {
     setError('');
 
     try {
-      const response = await axios.post('http://localhost:5000/api/download', {
+      const response = await axios.post(`${API_BASE_URL}/api/download`, {
         url,
         format: selectedFormat
       });
@@ -229,7 +232,7 @@ function App() {
                 </div>
 
                 <a 
-                  href={`http://localhost:5000${downloadInfo.downloadUrl}`}
+                  href={`${API_BASE_URL}${downloadInfo.downloadUrl}`}
                   download={downloadInfo.filename}
                   className="download-btn success"
                 >
