@@ -42,6 +42,25 @@ if (!fs.existsSync(downloadsDir)) {
     console.log('Created downloads directory');
 }
 
+// Root endpoint
+app.get('/', (req, res) => {
+    res.json({
+        message: '🎵 YouTube to MP3 Converter API',
+        status: 'running',
+        version: '1.0.0',
+        endpoints: {
+            health: '/api/health',
+            videoInfo: 'POST /api/video-info',
+            download: 'POST /api/download'
+        }
+    });
+});
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
+
 // Utility functions
 const getVideoId = (url) => {
     try {
