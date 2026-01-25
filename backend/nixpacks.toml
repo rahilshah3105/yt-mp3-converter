@@ -1,8 +1,5 @@
-[build]
-  nixpacksArchive = '7e5f5e5c22b8cd7ff8e6aac34da0f0cc29e72ba8'
-  
 [phases.setup]
-  nixPkgs = ['nodejs-20_x', 'python3', 'ffmpeg']
+  nixPkgs = ['nodejs_20', 'python3', 'ffmpeg']
   
 [phases.install]
   cmds = ['npm ci']
