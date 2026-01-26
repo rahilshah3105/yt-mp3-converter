@@ -140,19 +140,36 @@ const downloadAudioWithYtdl = (youtubeUrl, outputPath, quality = '320') => {
 };
 
 async function downloadAudioWithYtDlp(youtubeUrl, outputPath, quality = '320') {
+    console.log('🎵 Starting yt-dlp download...');
+    console.log('   URL:', youtubeUrl);
+    console.log('   Output:', outputPath);
+    console.log('   Quality:', quality);
+    
     const tempPath = outputPath.replace('.mp3', '.temp.mp3');
     const audioQuality = quality === '320' ? '320K' : quality === '256' ? '256K' : '128K';
 
-    await ytdlp(youtubeUrl, {
-        extractAudio: true,
-        audioFormat: 'mp3',
-        audioQuality: audioQuality,
-        output: tempPath,
-        ffmpegLocation: ffmpegPath,
-    });
+    try {
+        console.log('📥 Executing yt-dlp...');
+        await ytdlp(youtubeUrl, {
+            extractAudio: true,
+            audioFormat: 'mp3',
+            audioQuality: audioQuality,
+            output: tempPath,
+            ffmpegLocation: ffmpegPath,
+        });
 
-    // Only rename after ytdlp is done
-    await fsPromises.rename(tempPath, outputPath);
+        console.log('✅ yt-dlp download complete');
+        console.log('📝 Renaming file from temp to final...');
+        
+        // Only rename after ytdlp is done
+        await fsPromises.rename(tempPath, outputPath);
+        
+        console.log('✅ File ready:', outputPath);
+    } catch (error) {
+        console.error('❌ yt-dlp download failed:', error.message);
+        console.error('   Full error:', error);
+        throw error;
+    }
 }
 
 // Routes
@@ -233,31 +250,79 @@ app.post('/api/video-info', async (req, res) => {
 });
 
 app.post('/api/download', async (req, res) => {
-    console.log('Received download request:', req.body);
+    console.log('========================================');
+    console.log('📥 NEW DOWNLOAD REQUEST');
+    console.log('========================================');
+    console.log('Request body:', req.body);
+    console.log('Request headers:', req.headers);
 
     try {
         const { url, format } = req.body;
-        if (!url) return res.status(400).json({ error: 'URL is required' });
+        
+        console.log('🔍 Validating request...');
+        if (!url) {
+            console.log('❌ No URL provided');
+            return res.status(400).json({ error: 'URL is required' });
+        }
 
         const videoId = getVideoId(url);
-        if (!videoId) return res.status(400).json({ error: 'Invalid YouTube URL' });
+        console.log('🎬 Video ID:', videoId);
+        
+        if (!videoId) {
+            console.log('❌ Invalid YouTube URL');
+            return res.status(400).json({ error: 'Invalid YouTube URL' });
+        }
 
         const filename = `${uuidv4()}.mp3`;
         const outputPath = path.join(downloadsDir, filename);
+        
+        console.log('💾 File details:');
+        console.log('   Filename:', filename);
+        console.log('   Full path:', outputPath);
+        console.log('   Format:', format);
+        console.log('   Quality:', format.split('-')[1]);
 
+        console.log('⏳ Starting download process...');
+        const startTime = Date.now();
+        
         await downloadAudioWithYtDlp(url, outputPath, format.split('-')[1]);
+        
+        const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+        console.log(`✅ Download completed in ${duration}s`);
 
-        res.json({
+        // Check if file exists and get size
+        const stats = await fsPromises.stat(outputPath);
+        console.log('📊 File stats:');
+        console.log('   Size:', stats.size, 'bytes');
+        console.log('   Size (MB):', (stats.size / 1024 / 1024).toFixed(2), 'MB');
+
+        const response = {
             success: true,
             data: {
                 downloadUrl: `/downloads/${filename}`,
-                filename
+                filename,
+                size: stats.size
             }
-        });
+        };
+
+        console.log('📤 Sending response:', response);
+        console.log('========================================');
+        
+        res.json(response);
     } catch (error) {
-        console.error('Download process failed:', error);
+        console.error('========================================');
+        console.error('❌ DOWNLOAD FAILED');
+        console.error('========================================');
+        console.error('Error message:', error.message);
+        console.error('Error stack:', error.stack);
+        console.error('========================================');
+        
         res.status(500).json({
             error: 'Download failed',
+            details: error.message
+        });
+    }
+});
             details: error.stderr || error.message,
             suggestion: 'This might be due to YouTube restrictions or a temporary error. Please try a different video or try again later.'
         });
