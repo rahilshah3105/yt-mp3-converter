@@ -1,6 +1,7 @@
 [phases.setup]
-  nixPkgs = ['nodejs_20', 'python3', 'ffmpeg']
-  
+  nixPkgs = ['nodejs', 'python3', 'ffmpeg']
+  nixpkgsArchive = 'ba913eda2df8eb72147259189d55932012df6301'
+
 [phases.install]
   cmds = ['npm ci']
   

@@ -173,14 +173,6 @@ async function downloadAudioWithYtDlp(youtubeUrl, outputPath, quality = '320') {
 }
 
 // Routes
-app.get('/api/health', (req, res) => {
-    res.json({
-        status: 'OK',
-        timestamp: new Date().toISOString(),
-        ffmpeg: !!ffmpegPath
-    });
-});
-
 app.post('/api/video-info', async (req, res) => {
     try {
         const { url } = req.body;
@@ -320,11 +312,6 @@ app.post('/api/download', async (req, res) => {
         res.status(500).json({
             error: 'Download failed',
             details: error.message
-        });
-    }
-});
-            details: error.stderr || error.message,
-            suggestion: 'This might be due to YouTube restrictions or a temporary error. Please try a different video or try again later.'
         });
     }
 });
