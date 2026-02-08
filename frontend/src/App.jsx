@@ -1,10 +1,16 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Download, Youtube, Music, Loader, Check, AlertCircle, Play } from 'lucide-react';
+import { Download, Youtube, Music, Loader, AlertCircle, Play } from 'lucide-react';
 import './App.css';
 
 // Get backend URL from environment variable or use localhost for development
 const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+
+// YouTube URL validation regex
+const isYouTubeURL = (url) => {
+  const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+/;
+  return youtubeRegex.test(url);
+};
 
 function App() {
   const [url, setUrl] = useState('');
@@ -12,20 +18,28 @@ function App() {
   const [videoInfo, setVideoInfo] = useState(null);
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
-  const [downloadInfo, setDownloadInfo] = useState(null);
   const [error, setError] = useState('');
-  const [step, setStep] = useState(1); // 1: input, 2: preview, 3: downloading, 4: complete
+  const [step, setStep] = useState(1); // 1: input, 2: preview, 3: downloading
+  const debounceTimer = useRef(null);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!url) return;
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current);
+      }
+    };
+  }, []);
+
+  const fetchVideoInfo = async (videoUrl) => {
+    if (!videoUrl || !isYouTubeURL(videoUrl)) return;
 
     setLoading(true);
     setError('');
     setVideoInfo(null);
 
     try {
-      const response = await axios.post(`${API_BASE_URL}/api/video-info`, { url });
+      const response = await axios.post(`${API_BASE_URL}/api/video-info`, { url: videoUrl });
       if (response.data.success) {
         setVideoInfo(response.data.data);
         setStep(2);
@@ -37,36 +51,116 @@ function App() {
     }
   };
 
+  const handlePaste = (e) => {
+    const pastedText = e.clipboardData.getData('text');
+    
+    if (isYouTubeURL(pastedText)) {
+      // Clear any existing timer
+      if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current);
+      }
+      
+      // Set a small delay to allow the paste to complete
+      debounceTimer.current = setTimeout(() => {
+        fetchVideoInfo(pastedText);
+      }, 300);
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    fetchVideoInfo(url);
+  };
+
   const handleDownload = async () => {
     if (!videoInfo) return;
 
     setDownloading(true);
     setError('');
+    setStep(3);
 
     try {
+      // Initiate download with video title
       const response = await axios.post(`${API_BASE_URL}/api/download`, {
         url,
-        format: selectedFormat
+        format: selectedFormat,
+        title: videoInfo.title
       });
 
-      if (response.data.success) {
-        setDownloadInfo(response.data.data);
-        setStep(4);
+      if (response.data.success && response.data.data.jobId) {
+        const jobId = response.data.data.jobId;
+        
+        // Poll for status
+        const pollInterval = setInterval(async () => {
+          try {
+            const statusResponse = await axios.get(`${API_BASE_URL}/api/download/status/${jobId}`);
+            
+            if (statusResponse.data.success) {
+              const jobData = statusResponse.data.data;
+              
+              if (jobData.status === 'completed') {
+                clearInterval(pollInterval);
+                
+                // Fetch and download file as blob to avoid navigation
+                try {
+                  const downloadUrl = `${API_BASE_URL}${jobData.downloadUrl}`;
+                  const response = await fetch(downloadUrl);
+                  const blob = await response.blob();
+                  
+                  // Create blob URL and trigger download
+                  const blobUrl = window.URL.createObjectURL(blob);
+                  const link = document.createElement('a');
+                  link.href = blobUrl;
+                  link.download = jobData.filename;
+                  link.style.display = 'none';
+                  document.body.appendChild(link);
+                  link.click();
+                  document.body.removeChild(link);
+                  
+                  // Clean up blob URL
+                  window.URL.revokeObjectURL(blobUrl);
+                  
+                  console.log('✅ Download started:', jobData.filename);
+                } catch (downloadError) {
+                  console.error('Download error:', downloadError);
+                }
+                
+                // Reset to initial state
+                setDownloading(false);
+                setUrl('');
+                setVideoInfo(null);
+                setStep(1);
+                setError('');
+                
+              } else if (jobData.status === 'failed') {
+                clearInterval(pollInterval);
+                setError(jobData.error || 'Download failed');
+                setDownloading(false);
+                setStep(2);
+              }
+              // If still processing, keep polling
+            }
+          } catch (pollError) {
+            console.error('Status poll error:', pollError);
+          }
+        }, 2000); // Poll every 2 seconds
+
+        // Timeout after 5 minutes
+        setTimeout(() => {
+          clearInterval(pollInterval);
+          if (downloading) {
+            setError('Download timeout - please try again');
+            setDownloading(false);
+            setStep(2);
+          }
+        }, 300000);
       }
     } catch (err) {
-      setError(err.response?.data?.error || 'Download failed');
-      setStep(2);
-    } finally {
+      console.error('Download error:', err);
+      setError(err.response?.data?.error || err.message || 'Download failed');
       setDownloading(false);
+      setStep(2);
     }
-  };
-
-  const handleNewDownload = () => {
-    setUrl('');
-    setVideoInfo(null);
-    setDownloadInfo(null);
-    setError('');
-    setStep(1);
   };
 
   const formatFileSize = (bytes) => {
@@ -103,6 +197,7 @@ function App() {
                     type="url"
                     value={url}
                     onChange={(e) => setUrl(e.target.value)}
+                    onPaste={handlePaste}
                     placeholder="Paste YouTube URL here..."
                     className="url-input"
                     required
@@ -202,7 +297,12 @@ function App() {
               </button>
 
               <button 
-                onClick={handleNewDownload}
+                onClick={() => {
+                  setUrl('');
+                  setVideoInfo(null);
+                  setError('');
+                  setStep(1);
+                }}
                 className="back-btn"
               >
                 Convert another video
@@ -215,38 +315,6 @@ function App() {
               <Loader className="spin large" />
               <h3>Converting your video...</h3>
               <p>This may take a few moments</p>
-            </div>
-          )}
-
-          {step === 4 && downloadInfo && (
-            <div className="download-section">
-              <div className="success-message">
-                <Check className="success-icon" />
-                <h3>Conversion Complete!</h3>
-              </div>
-
-              <div className="download-info">
-                <div className="file-info">
-                  <span className="file-name">{downloadInfo.filename}</span>
-                  <span className="file-size">{formatFileSize(downloadInfo.size)}</span>
-                </div>
-
-                <a 
-                  href={`${API_BASE_URL}${downloadInfo.downloadUrl}`}
-                  download={downloadInfo.filename}
-                  className="download-btn success"
-                >
-                  <Download size={18} />
-                  <span>Download MP3</span>
-                </a>
-              </div>
-
-              <button 
-                onClick={handleNewDownload}
-                className="download-btn outline"
-              >
-                Convert another video
-              </button>
             </div>
           )}
         </div>

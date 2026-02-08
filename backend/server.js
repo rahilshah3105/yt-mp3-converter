@@ -42,6 +42,9 @@ if (!fs.existsSync(downloadsDir)) {
     console.log('Created downloads directory');
 }
 
+// Download jobs tracking
+const downloadJobs = new Map();
+
 // Root endpoint
 app.get('/', (req, res) => {
     res.json({
@@ -145,29 +148,49 @@ async function downloadAudioWithYtDlp(youtubeUrl, outputPath, quality = '320') {
     console.log('   Output:', outputPath);
     console.log('   Quality:', quality);
     
-    const tempPath = outputPath.replace('.mp3', '.temp.mp3');
-    const audioQuality = quality === '320' ? '320K' : quality === '256' ? '256K' : '128K';
+    const audioBitrate = quality === '320' ? '320' : quality === '256' ? '256' : '128';
 
     try {
-        console.log('📥 Executing yt-dlp...');
+        console.log('📥 Executing yt-dlp with advanced options...');
         await ytdlp(youtubeUrl, {
             extractAudio: true,
             audioFormat: 'mp3',
-            audioQuality: audioQuality,
-            output: tempPath,
+            postprocessorArgs: `ffmpeg:-b:a ${audioBitrate}k`,
+            format: 'bestaudio/best',
+            output: outputPath,
             ffmpegLocation: ffmpegPath,
+            noPlaylist: true,
+            preferFreeFormats: true,
+            addHeader: [
+                'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language:en-us,en;q=0.5',
+                'Sec-Fetch-Mode:navigate'
+            ],
+            noCheckCertificates: true,
+            noCallHome: true,
         });
 
         console.log('✅ yt-dlp download complete');
-        console.log('📝 Renaming file from temp to final...');
-        
-        // Only rename after ytdlp is done
-        await fsPromises.rename(tempPath, outputPath);
-        
         console.log('✅ File ready:', outputPath);
+        
+        // Verify file exists
+        const exists = await fsPromises.access(outputPath).then(() => true).catch(() => false);
+        if (!exists) {
+            throw new Error('File was not created by yt-dlp');
+        }
+        
     } catch (error) {
         console.error('❌ yt-dlp download failed:', error.message);
         console.error('   Full error:', error);
+        
+        // Clean up partial files
+        try {
+            await fsPromises.unlink(outputPath);
+        } catch (unlinkError) {
+            console.error('Error during cleanup of partial file:', outputPath);
+        }
+        
         throw error;
     }
 }
@@ -246,10 +269,9 @@ app.post('/api/download', async (req, res) => {
     console.log('📥 NEW DOWNLOAD REQUEST');
     console.log('========================================');
     console.log('Request body:', req.body);
-    console.log('Request headers:', req.headers);
 
     try {
-        const { url, format } = req.body;
+        const { url, format, title } = req.body;
         
         console.log('🔍 Validating request...');
         if (!url) {
@@ -265,58 +287,143 @@ app.post('/api/download', async (req, res) => {
             return res.status(400).json({ error: 'Invalid YouTube URL' });
         }
 
-        const filename = `${uuidv4()}.mp3`;
+        // Use provided title or fallback to 'audio'
+        const videoTitle = title ? sanitizeFilename(title) : 'audio';
+        console.log('📝 Video Title:', videoTitle);
+
+        const jobId = uuidv4();
+        const filename = `${videoTitle}.mp3`;
         const outputPath = path.join(downloadsDir, filename);
         
         console.log('💾 File details:');
+        console.log('   Job ID:', jobId);
+        console.log('   Video Title:', videoTitle);
         console.log('   Filename:', filename);
-        console.log('   Full path:', outputPath);
         console.log('   Format:', format);
         console.log('   Quality:', format.split('-')[1]);
 
-        console.log('⏳ Starting download process...');
-        const startTime = Date.now();
-        
-        await downloadAudioWithYtDlp(url, outputPath, format.split('-')[1]);
-        
-        const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-        console.log(`✅ Download completed in ${duration}s`);
+        // Create job entry
+        downloadJobs.set(jobId, {
+            status: 'processing',
+            progress: 0,
+            filename,
+            videoTitle,
+            error: null
+        });
 
-        // Check if file exists and get size
-        const stats = await fsPromises.stat(outputPath);
-        console.log('📊 File stats:');
-        console.log('   Size:', stats.size, 'bytes');
-        console.log('   Size (MB):', (stats.size / 1024 / 1024).toFixed(2), 'MB');
-
-        const response = {
+        // Respond immediately
+        console.log('✅ Job created, responding immediately');
+        res.json({
             success: true,
             data: {
-                downloadUrl: `/downloads/${filename}`,
-                filename,
-                size: stats.size
+                jobId,
+                status: 'processing'
             }
-        };
+        });
 
-        console.log('📤 Sending response:', response);
-        console.log('========================================');
+        // Start download in background
+        console.log('⏳ Starting background download...');
+        const startTime = Date.now();
         
-        res.json(response);
+        // Set a timeout promise
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Download timeout after 5 minutes')), 300000);
+        });
+        
+        // Race between download and timeout
+        Promise.race([
+            downloadAudioWithYtDlp(url, outputPath, format.split('-')[1]),
+            timeoutPromise
+        ])
+            .then(async () => {
+                const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+                console.log(`✅ Download completed in ${duration}s`);
+                console.log('🔍 Verifying file...');
+
+                // Check if file exists and get size
+                try {
+                    const stats = await fsPromises.stat(outputPath);
+                    console.log('📊 File stats:');
+                    console.log('   Size:', stats.size, 'bytes');
+                    console.log('   Size (MB):', (stats.size / 1024 / 1024).toFixed(2), 'MB');
+
+                    // Update job status
+                    downloadJobs.set(jobId, {
+                        status: 'completed',
+                        progress: 100,
+                        filename,
+                        videoTitle,
+                        downloadUrl: `/downloads/${encodeURIComponent(filename)}`,
+                        size: stats.size,
+                        error: null
+                    });
+
+                    console.log('✅ Job completed successfully:', jobId);
+                } catch (statError) {
+                    console.error('❌ File verification failed:', statError.message);
+                    downloadJobs.set(jobId, {
+                        status: 'failed',
+                        progress: 0,
+                        filename,
+                        error: 'File verification failed: ' + statError.message
+                    });
+                }
+            })
+            .catch((error) => {
+                console.error('❌ Download failed:', error.message);
+                console.error('   Stack:', error.stack);
+                
+                // Update job with error
+                downloadJobs.set(jobId, {
+                    status: 'failed',
+                    progress: 0,
+                    filename,
+                    error: error.message
+                });
+                
+                console.log('❌ Job failed:', jobId);
+                // Optionally, clean up any partially downloaded file
+                const partialPath = path.join(downloadsDir, filename);
+                fsPromises.unlink(partialPath).catch(() => {
+                    // Ignore errors during cleanup
+                    console.error('Error during cleanup of partial file:', partialPath);
+                });
+            });
+
     } catch (error) {
         console.error('========================================');
-        console.error('❌ DOWNLOAD FAILED');
+        console.error('❌ REQUEST FAILED');
         console.error('========================================');
         console.error('Error message:', error.message);
-        console.error('Error stack:', error.stack);
         console.error('========================================');
         
         res.status(500).json({
-            error: 'Download failed',
+            error: 'Request failed',
             details: error.message
         });
     }
 });
 
-// Cleanup function for old files
+// Status endpoint to check download progress
+app.get('/api/download/status/:jobId', (req, res) => {
+    const { jobId } = req.params;
+    
+    console.log('📊 Status check for job:', jobId);
+    const job = downloadJobs.get(jobId);
+    
+    if (!job) {
+        console.log('❌ Job not found:', jobId);
+        return res.status(404).json({ error: 'Job not found' });
+    }
+    
+    console.log('📊 Job status:', job.status);
+    res.json({
+        success: true,
+        data: job
+    });
+});
+
+// Cleanup function for old files and jobs
 const cleanupOldFiles = () => {
     try {
         if (!fs.existsSync(downloadsDir)) return;
@@ -337,6 +444,13 @@ const cleanupOldFiles = () => {
                 console.error('Error cleaning up file:', err);
             }
         });
+
+        // Clean up old job entries (older than 1 hour)
+        for (const [jobId, job] of downloadJobs.entries()) {
+            if (job.status === 'completed' || job.status === 'failed') {
+                downloadJobs.delete(jobId);
+            }
+        }
     } catch (err) {
         console.error('Error reading downloads directory:', err);
     }
