@@ -1,9 +1,8 @@
 [phases.setup]
-  nixPkgs = ['nodejs', 'python3']
-  nixpkgsArchive = 'ba913eda2df8eb72147259189d55932012df6301'
+  nixPkgs = ['nodejs_20']
 
 [phases.install]
-  cmds = ['npm ci']
+  cmds = ['npm ci --legacy-peer-deps']
   
 [phases.build]
   cmds = ['npm run build']
