@@ -14,13 +14,16 @@ const isYouTubeURL = (url) => {
 
 function App() {
   const [url, setUrl] = useState('');
-  const [selectedFormat, setSelectedFormat] = useState('mp3-320');
+  const [selectedFormat, setSelectedFormat] = useState('mp3-128');
   const [videoInfo, setVideoInfo] = useState(null);
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState('');
   const [step, setStep] = useState(1); // 1: input, 2: preview, 3: downloading
   const debounceTimer = useRef(null);
+  const pollIntervalRef = useRef(null);
+  const pollTimeoutRef = useRef(null);
+  const pollRequestInFlightRef = useRef(false);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -28,6 +31,13 @@ function App() {
       if (debounceTimer.current) {
         clearTimeout(debounceTimer.current);
       }
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+      if (pollTimeoutRef.current) {
+        clearTimeout(pollTimeoutRef.current);
+      }
+      pollRequestInFlightRef.current = false;
     };
   }, []);
 
@@ -75,6 +85,16 @@ function App() {
   const handleDownload = async () => {
     if (!videoInfo) return;
 
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+    if (pollTimeoutRef.current) {
+      clearTimeout(pollTimeoutRef.current);
+      pollTimeoutRef.current = null;
+    }
+    pollRequestInFlightRef.current = false;
+
     setDownloading(true);
     setError('');
     setStep(3);
@@ -91,7 +111,12 @@ function App() {
         const jobId = response.data.data.jobId;
         
         // Poll for status
-        const pollInterval = setInterval(async () => {
+        pollIntervalRef.current = setInterval(async () => {
+          if (pollRequestInFlightRef.current) {
+            return;
+          }
+
+          pollRequestInFlightRef.current = true;
           try {
             const statusResponse = await axios.get(`${API_BASE_URL}/api/download/status/${jobId}`);
             
@@ -99,7 +124,15 @@ function App() {
               const jobData = statusResponse.data.data;
               
               if (jobData.status === 'completed') {
-                clearInterval(pollInterval);
+                if (pollIntervalRef.current) {
+                  clearInterval(pollIntervalRef.current);
+                  pollIntervalRef.current = null;
+                }
+                if (pollTimeoutRef.current) {
+                  clearTimeout(pollTimeoutRef.current);
+                  pollTimeoutRef.current = null;
+                }
+                pollRequestInFlightRef.current = false;
                 
                 // Fetch and download file as blob to avoid navigation
                 try {
@@ -133,7 +166,15 @@ function App() {
                 setError('');
                 
               } else if (jobData.status === 'failed') {
-                clearInterval(pollInterval);
+                if (pollIntervalRef.current) {
+                  clearInterval(pollIntervalRef.current);
+                  pollIntervalRef.current = null;
+                }
+                if (pollTimeoutRef.current) {
+                  clearTimeout(pollTimeoutRef.current);
+                  pollTimeoutRef.current = null;
+                }
+                pollRequestInFlightRef.current = false;
                 setError(jobData.error || 'Download failed');
                 setDownloading(false);
                 setStep(2);
@@ -142,17 +183,21 @@ function App() {
             }
           } catch (pollError) {
             console.error('Status poll error:', pollError);
+          } finally {
+            pollRequestInFlightRef.current = false;
           }
-        }, 2000); // Poll every 2 seconds
+        }, 3000); // Poll every 3 seconds
 
         // Timeout after 5 minutes
-        setTimeout(() => {
-          clearInterval(pollInterval);
-          if (downloading) {
-            setError('Download timeout - please try again');
-            setDownloading(false);
-            setStep(2);
+        pollTimeoutRef.current = setTimeout(() => {
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
           }
+          pollRequestInFlightRef.current = false;
+          setError('Download timeout - please try again');
+          setDownloading(false);
+          setStep(2);
         }, 300000);
       }
     } catch (err) {
@@ -320,7 +365,7 @@ function App() {
         </div>
 
         <div className="footer">
-          <p>© 2025 YouTube to MP3 Converter. Free online tool.</p>
+          <p>© 2026 YouTube to MP3 Converter. Free online tool.</p>
         </div>
       </div>
     </div>

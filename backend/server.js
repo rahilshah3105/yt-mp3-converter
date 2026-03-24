@@ -44,6 +44,8 @@ if (!fs.existsSync(downloadsDir)) {
 
 // Download jobs tracking
 const downloadJobs = new Map();
+const recentJobByVideo = new Map();
+const JOB_REUSE_WINDOW_MS = 20 * 1000;
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -81,6 +83,34 @@ const getVideoThumbnail = (videoId) => {
 
 const sanitizeFilename = (filename) => {
     return filename.replace(/[^a-zA-Z0-9\u0600-\u06FF\u4e00-\u9fff\u3400-\u4dbf\s_-]/g, '').trim();
+};
+
+const getQualityFromFormat = (format) => {
+    if (typeof format !== 'string') return '320';
+    const quality = format.split('-')[1];
+    if (!quality) return '320';
+    return ['128', '256', '320'].includes(quality) ? quality : '320';
+};
+
+const getAvailableFilename = async (baseTitle) => {
+    const safeBaseTitle = baseTitle || 'audio';
+    let candidate = `${safeBaseTitle}.mp3`;
+    let candidatePath = path.join(downloadsDir, candidate);
+    let duplicateIndex = 1;
+
+    while (true) {
+        try {
+            await fsPromises.access(candidatePath);
+            candidate = `${safeBaseTitle} (${duplicateIndex}).mp3`;
+            candidatePath = path.join(downloadsDir, candidate);
+            duplicateIndex += 1;
+        } catch {
+            return {
+                filename: candidate,
+                outputPath: candidatePath
+            };
+        }
+    }
 };
 
 // Enhanced download function using ytdl-core + ffmpeg
@@ -161,6 +191,10 @@ async function downloadAudioWithYtDlp(youtubeUrl, outputPath, quality = '320') {
             ffmpegLocation: ffmpegPath,
             noPlaylist: true,
             preferFreeFormats: true,
+            concurrentFragments: 4,
+            socketTimeout: 30,
+            retries: 2,
+            fragmentRetries: 2,
             addHeader: [
                 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -287,20 +321,40 @@ app.post('/api/download', async (req, res) => {
             return res.status(400).json({ error: 'Invalid YouTube URL' });
         }
 
-        // Use provided title or fallback to 'audio'
-        const videoTitle = title ? sanitizeFilename(title) : 'audio';
+        const selectedQuality = getQualityFromFormat(format);
+        const dedupeKey = `${videoId}:${selectedQuality}`;
+        const now = Date.now();
+
+        const existingRequest = recentJobByVideo.get(dedupeKey);
+        if (existingRequest && now - existingRequest.createdAtMs <= JOB_REUSE_WINDOW_MS) {
+            const existingJob = downloadJobs.get(existingRequest.jobId);
+            if (existingJob && (existingJob.status === 'processing' || existingJob.status === 'completed')) {
+                console.log('♻️ Reusing existing job:', existingRequest.jobId);
+                return res.json({
+                    success: true,
+                    data: {
+                        jobId: existingRequest.jobId,
+                        status: existingJob.status,
+                        reused: true
+                    }
+                });
+            }
+        }
+
+        // Use provided title or fallback to a safe default
+        const sanitizedTitle = title ? sanitizeFilename(title) : '';
+        const videoTitle = sanitizedTitle || 'audio';
         console.log('📝 Video Title:', videoTitle);
 
         const jobId = uuidv4();
-        const filename = `${videoTitle}.mp3`;
-        const outputPath = path.join(downloadsDir, filename);
+        const { filename, outputPath } = await getAvailableFilename(videoTitle);
         
         console.log('💾 File details:');
         console.log('   Job ID:', jobId);
         console.log('   Video Title:', videoTitle);
         console.log('   Filename:', filename);
         console.log('   Format:', format);
-        console.log('   Quality:', format.split('-')[1]);
+        console.log('   Quality:', selectedQuality);
 
         // Create job entry
         downloadJobs.set(jobId, {
@@ -308,7 +362,14 @@ app.post('/api/download', async (req, res) => {
             progress: 0,
             filename,
             videoTitle,
+            quality: selectedQuality,
+            createdAt: new Date().toISOString(),
             error: null
+        });
+
+        recentJobByVideo.set(dedupeKey, {
+            jobId,
+            createdAtMs: now
         });
 
         // Respond immediately
@@ -324,71 +385,75 @@ app.post('/api/download', async (req, res) => {
         // Start download in background
         console.log('⏳ Starting background download...');
         const startTime = Date.now();
-        
-        // Set a timeout promise
-        const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(() => reject(new Error('Download timeout after 5 minutes')), 300000);
-        });
-        
-        // Race between download and timeout
-        Promise.race([
-            downloadAudioWithYtDlp(url, outputPath, format.split('-')[1]),
-            timeoutPromise
-        ])
-            .then(async () => {
+
+        (async () => {
+            let timeoutHandle;
+            try {
+                await Promise.race([
+                    (async () => {
+                        await downloadAudioWithYtDlp(url, outputPath, selectedQuality);
+                    })(),
+                    new Promise((_, reject) => {
+                        timeoutHandle = setTimeout(() => {
+                            reject(new Error('Download timeout after 5 minutes'));
+                        }, 300000);
+                    })
+                ]);
+
                 const duration = ((Date.now() - startTime) / 1000).toFixed(2);
                 console.log(`✅ Download completed in ${duration}s`);
                 console.log('🔍 Verifying file...');
 
-                // Check if file exists and get size
-                try {
-                    const stats = await fsPromises.stat(outputPath);
-                    console.log('📊 File stats:');
-                    console.log('   Size:', stats.size, 'bytes');
-                    console.log('   Size (MB):', (stats.size / 1024 / 1024).toFixed(2), 'MB');
+                const stats = await fsPromises.stat(outputPath);
+                console.log('📊 File stats:');
+                console.log('   Size:', stats.size, 'bytes');
+                console.log('   Size (MB):', (stats.size / 1024 / 1024).toFixed(2), 'MB');
 
-                    // Update job status
-                    downloadJobs.set(jobId, {
-                        status: 'completed',
-                        progress: 100,
-                        filename,
-                        videoTitle,
-                        downloadUrl: `/downloads/${encodeURIComponent(filename)}`,
-                        size: stats.size,
-                        error: null
-                    });
+                downloadJobs.set(jobId, {
+                    status: 'completed',
+                    progress: 100,
+                    filename,
+                    videoTitle,
+                    quality: selectedQuality,
+                    downloadUrl: `/downloads/${encodeURIComponent(filename)}`,
+                    size: stats.size,
+                    completedAt: new Date().toISOString(),
+                    error: null
+                });
 
-                    console.log('✅ Job completed successfully:', jobId);
-                } catch (statError) {
-                    console.error('❌ File verification failed:', statError.message);
-                    downloadJobs.set(jobId, {
-                        status: 'failed',
-                        progress: 0,
-                        filename,
-                        error: 'File verification failed: ' + statError.message
-                    });
-                }
-            })
-            .catch((error) => {
+                console.log('✅ Job completed successfully:', jobId);
+            } catch (error) {
                 console.error('❌ Download failed:', error.message);
                 console.error('   Stack:', error.stack);
-                
-                // Update job with error
+
                 downloadJobs.set(jobId, {
                     status: 'failed',
                     progress: 0,
                     filename,
+                    videoTitle,
+                    quality: selectedQuality,
+                    failedAt: new Date().toISOString(),
                     error: error.message
                 });
-                
+
                 console.log('❌ Job failed:', jobId);
-                // Optionally, clean up any partially downloaded file
-                const partialPath = path.join(downloadsDir, filename);
-                fsPromises.unlink(partialPath).catch(() => {
-                    // Ignore errors during cleanup
-                    console.error('Error during cleanup of partial file:', partialPath);
-                });
-            });
+
+                const dedupeEntry = recentJobByVideo.get(dedupeKey);
+                if (dedupeEntry && dedupeEntry.jobId === jobId) {
+                    recentJobByVideo.delete(dedupeKey);
+                }
+
+                try {
+                    await fsPromises.unlink(outputPath);
+                } catch (unlinkError) {
+                    console.error('Error during cleanup of partial file:', outputPath);
+                }
+            } finally {
+                if (timeoutHandle) {
+                    clearTimeout(timeoutHandle);
+                }
+            }
+        })();
 
     } catch (error) {
         console.error('========================================');
@@ -396,7 +461,11 @@ app.post('/api/download', async (req, res) => {
         console.error('========================================');
         console.error('Error message:', error.message);
         console.error('========================================');
-        
+
+        if (res.headersSent) {
+            return;
+        }
+
         res.status(500).json({
             error: 'Request failed',
             details: error.message
@@ -449,6 +518,13 @@ const cleanupOldFiles = () => {
         for (const [jobId, job] of downloadJobs.entries()) {
             if (job.status === 'completed' || job.status === 'failed') {
                 downloadJobs.delete(jobId);
+            }
+        }
+
+        // Clean up stale dedupe entries
+        for (const [key, value] of recentJobByVideo.entries()) {
+            if (now - value.createdAtMs > JOB_REUSE_WINDOW_MS * 3) {
+                recentJobByVideo.delete(key);
             }
         }
     } catch (err) {
